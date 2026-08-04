@@ -31,12 +31,8 @@ form.addEventListener("submit", async (event) => {
   setImagePlaceholder("The illustration comes after the story.");
 
   try {
-    // 1. Write the story, streaming it into the page as it arrives.
-    const raw = await generateStory(topic, lengthSelect.value as StoryLength, (textSoFar) => {
-      const { title, body } = parseStory(textSoFar);
-      titleEl.textContent = title;
-      renderStory(body);
-    });
+    // 1. Write the story. One request, one response — see generateStory().
+    const raw = await generateStory(topic, lengthSelect.value as StoryLength);
 
     current = parseStory(raw);
     titleEl.textContent = current.title;

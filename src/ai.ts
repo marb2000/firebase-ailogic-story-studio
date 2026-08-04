@@ -47,26 +47,19 @@ const LENGTH_HINT: Record<StoryLength, string> = {
 };
 
 /**
- * Generates a story about `topic`, streaming it as it is written.
+ * Generates a story about `topic`.
  *
- * `onProgress` receives the full text so far on every chunk, so the caller can
- * just drop it into the DOM without stitching anything together.
+ * This is the unary `generateContent()`, not `generateContentStream()`, on
+ * purpose: **AI Logic Cloud Triggers don't fire on streamed calls.** Streaming
+ * would give a nicer typewriter effect and silently skip the before/after
+ * hooks in `functions/`, which is exactly the sort of bypass those hooks exist
+ * to prevent.
  */
-export async function generateStory(
-  topic: string,
-  length: StoryLength,
-  onProgress: (textSoFar: string) => void,
-): Promise<string> {
+export async function generateStory(topic: string, length: StoryLength): Promise<string> {
   const prompt = `Write a story about: ${topic}\n\nLength: ${LENGTH_HINT[length]}.`;
 
-  const { stream } = await storyModel.generateContentStream(prompt);
-
-  let text = "";
-  for await (const chunk of stream) {
-    text += chunk.text();
-    onProgress(text);
-  }
-  return text;
+  const result = await storyModel.generateContent(prompt);
+  return result.response.text();
 }
 
 /**

@@ -67,6 +67,8 @@ export const guardStoryPrompts = beforeGenerateContent((event) => {
     model: event.data.model,
     // "app_user" when Firebase Auth is in play, "unauthenticated" otherwise.
     authType: event.authType,
+    // The caller's uid, when there is one.
+    authId: event.authId,
     appId: event.appId,
   });
 
@@ -76,9 +78,10 @@ export const guardStoryPrompts = beforeGenerateContent((event) => {
     return;
   }
 
-  // What you return goes back into the outgoing request. Spreading the existing
-  // config keeps whatever the client set; only the ceiling is ours.
+  // Return the *whole* request, edited — not just the fields you changed.
+  // Returning nothing at all leaves it untouched.
   return {
+    ...request,
     generationConfig: {
       ...request.generationConfig,
       maxOutputTokens: Math.min(

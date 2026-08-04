@@ -70,8 +70,11 @@ http://localhost:5173.
 | [`src/main.ts`](src/main.ts) | DOM wiring |
 
 Both models go through the same `generateContent()` API — the image model just
-asks for an `IMAGE` response modality. Story is `gemini-3.6-flash` (streamed),
-illustration is `gemini-3.1-flash-image` (Nano Banana 2).
+asks for an `IMAGE` response modality. Story is `gemini-3.6-flash`, illustration
+is `gemini-3.1-flash-image` (Nano Banana 2).
+
+Calls are **unary, never streamed**. Cloud Triggers don't fire on
+`generateContentStream()`, so streaming would quietly bypass the hooks below.
 
 ## Gotchas
 
