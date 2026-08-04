@@ -87,11 +87,25 @@ works on localhost and nowhere else. Before deploying, register the app with
 reCAPTCHA Enterprise in the console and swap in
 `new ReCaptchaEnterpriseProvider("<site key>")`. Then `npm run deploy`.
 
-## Next
+## Cloud Triggers
 
-AI Logic Cloud Triggers — `beforeGenerateContent` and `afterGenerateContent`,
-deployed as Cloud Functions. The two calls in [`src/ai.ts`](src/ai.ts) are what
-they'd intercept.
+[`functions/src/index.ts`](functions/src/index.ts) has two AI Logic blocking
+functions. They run inside AI Logic, so the browser can't skip them.
+
+| Function | Event | What it does |
+| --- | --- | --- |
+| `guardStoryPrompts` | `beforeGenerateContent` | Rejects blocked topics, caps story length |
+| `recordGenerationUsage` | `afterGenerateContent` | Logs model and token usage |
+
+```bash
+cd functions && npm install && npm run build
+```
+
+Not deployed yet. `firebase deploy --only functions --dry-run` validates without
+deploying, but it enables the Cloud Functions APIs on your project.
+
+Both are **global** triggers, so there's one of each per project and the CLI puts
+them in `us-east1`. Pass `{ regionalWebhook: true }` for one per region.
 
 ## License
 
