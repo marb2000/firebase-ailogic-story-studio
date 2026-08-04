@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Story Studio — Firebase AI Logic</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>📖</text></svg>" />
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1>📖 Story Studio</h1>
+        <p class="sub">Gemini writes the story, Nano Banana draws it. Powered by Firebase AI Logic.</p>
+      </header>
+
+      <form id="story-form">
+        <label for="topic">What should the story be about?</label>
+        <input
+          id="topic"
+          name="topic"
+          type="text"
+          placeholder="A lighthouse keeper who befriends a storm"
+          required
+          autocomplete="off"
+        />
+
+        <label for="length">How long?</label>
+        <select id="length" name="length">
+          <option value="short">Short — a few paragraphs</option>
+          <option value="medium" selected>Medium — a page or so</option>
+          <option value="long">Long — settle in</option>
+        </select>
+
+        <button id="generate" type="submit">Tell me a story</button>
+      </form>
+
+      <p id="error" class="error" hidden></p>
+
+      <section id="result" hidden>
+        <h2 id="title"></h2>
+
+        <figure id="illustration">
+          <div id="image-slot" class="image-slot">
+            <span class="placeholder">Illustrating…</span>
+          </div>
+          <figcaption>
+            <button id="regenerate" type="button">🎲 Regenerate image</button>
+          </figcaption>
+        </figure>
+
+        <article id="story"></article>
+      </section>
+    </main>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

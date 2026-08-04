@@ -1,0 +1,177 @@
+:root {
+  --bg: #12100e;
+  --panel: #1c1917;
+  --border: #332e2a;
+  --text: #f2ede7;
+  --muted: #a39a91;
+  --accent: #f0a35e;
+  --danger: #ff8574;
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  padding: 2.5rem 1.25rem 5rem;
+  background: var(--bg);
+  color: var(--text);
+  font: 16px/1.65 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+main {
+  max-width: 46rem;
+  margin: 0 auto;
+}
+
+header h1 {
+  margin: 0;
+  font-size: 2rem;
+  letter-spacing: -0.02em;
+}
+
+.sub {
+  margin: 0.35rem 0 2rem;
+  color: var(--muted);
+}
+
+/* ---- form ---- */
+
+form {
+  display: grid;
+  gap: 0.5rem;
+  padding: 1.5rem;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+}
+
+label {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+label + * {
+  margin-bottom: 0.75rem;
+}
+
+input,
+select {
+  width: 100%;
+  padding: 0.7rem 0.85rem;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  font: inherit;
+}
+
+input:focus,
+select:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+button {
+  padding: 0.75rem 1.1rem;
+  background: var(--accent);
+  color: #221605;
+  border: none;
+  border-radius: 9px;
+  font: inherit;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+button:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ---- output ---- */
+
+.error {
+  margin: 1.25rem 0 0;
+  padding: 0.85rem 1rem;
+  background: #37201d;
+  border: 1px solid #5c322c;
+  border-radius: 10px;
+  color: var(--danger);
+  font-size: 0.9rem;
+}
+
+#result {
+  margin-top: 2.5rem;
+}
+
+#title {
+  margin: 0 0 1.25rem;
+  font-size: 1.75rem;
+  letter-spacing: -0.02em;
+}
+
+figure {
+  margin: 0 0 1.75rem;
+}
+
+.image-slot {
+  display: grid;
+  place-items: center;
+  aspect-ratio: 4 / 3;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  overflow: hidden;
+}
+
+.image-slot img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.placeholder {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+figcaption {
+  margin-top: 0.75rem;
+  display: flex;
+  justify-content: flex-end;
+}
+
+figcaption button {
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  font-weight: 500;
+  font-size: 0.9rem;
+}
+
+figcaption button:hover:not(:disabled) {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+#story p {
+  margin: 0 0 1.15rem;
+}
+
+body.busy .placeholder {
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  50% {
+    opacity: 0.4;
+  }
+}
