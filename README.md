@@ -37,85 +37,116 @@ the App Check token and calls Vertex AI on your behalf.
 
 ## Setup, from a brand new Firebase project
 
+Everything below is the Firebase CLI. The only thing you can't do from the
+terminal is turn on billing.
+
 You need [Node.js](https://nodejs.org) 20+ and a recent Firebase CLI:
 
 ```bash
 npm install -g firebase-tools && firebase login
 ```
 
+### 0. Turn on the preview command groups
+
+The AI Logic and App Check admin commands are in preview behind experiment flags:
+
+```bash
+firebase experiments:enable ailogic
+firebase experiments:enable appcheckadmin
+```
+
+> `appcheck:debugtokens` is generally available and doesn't need a flag. The rest
+> of the App Check surface is still in review and may change.
+
 ### 1. Create a project
 
 ```bash
 firebase projects:create my-story-studio
+firebase use my-story-studio
 ```
-
-Or make one in the [Firebase console](https://console.firebase.google.com).
 
 ### 2. Upgrade it to the Blaze plan
 
-**This one is not optional.** The Vertex AI backend and *every* image-generation
-model — Nano Banana included — require pay-as-you-go billing. On the free Spark
-plan the story call fails and the illustration never appears.
+**The one manual step, and it isn't optional.** The Vertex AI backend and *every*
+image-generation model — Nano Banana included — require pay-as-you-go billing. On
+the free Spark plan the story call fails and the illustration never appears.
 
-Do it in the console: **⚙️ Project settings → Usage and billing → Modify plan →
-Blaze**. It needs a billing account, and it can't be done from the CLI.
+Console: **⚙️ Project settings → Usage and billing → Modify plan → Blaze**. It
+needs a billing account, so there's no CLI equivalent.
 
 Generating a story plus an image costs a fraction of a cent, but set a budget
 alert while you're in there if you're experimenting.
 
-### 3. Point this checkout at the project
-
-```bash
-firebase use --add
-```
-
-### 4. Register a web app
+### 3. Register a web app
 
 ```bash
 firebase apps:create web "Story Studio"
 ```
 
-Note the app ID it prints — you'll need it in step 7.
+Note the app ID it prints — the App Check commands take it as `--app`.
 
-### 5. Turn on AI Logic
+### 4. Turn on AI Logic
 
 ```bash
 firebase init ailogic
 ```
 
-Pick the web app you just created. This enables `firebasevertexai.googleapis.com`.
+Pick the web app you just created.
 
-### 6. Enable the Vertex AI provider
+### 5. Enable the Vertex AI provider
 
-AI Logic can talk to two providers, and this app uses the Vertex AI one (also
-called the Agent Platform Gemini API). That provider is backed by a separate API:
+AI Logic can talk to two Gemini providers, and this app uses the Vertex AI one
+(also called the Agent Platform Gemini API):
 
 ```bash
-gcloud services enable aiplatform.googleapis.com --project <your-project-id>
+firebase ailogic:providers:enable gemini-agent-platform-api
 ```
 
-No `gcloud`? Open **AI Logic → Get started** in the Firebase console and choose
-the **Vertex AI Gemini API**, which enables it for you.
-
-> Newer CLIs have `firebase ailogic:providers:enable gemini-agent-platform-api`,
-> which does the same thing. Try it first.
-
-### 7. Set up App Check
-
-App Check proves a request came from your real app. Firebase **enforces it on AI
-Logic by default**, so nothing works until you've done this.
-
-Enable the API and register a debug token for local development:
+Check where you stand at any point:
 
 ```bash
-gcloud services enable firebaseappcheck.googleapis.com --project <your-project-id>
+$ firebase ailogic:providers:list
+┌───────────────────────────┬─────────┐
+│ Provider                  │ Status  │
+├───────────────────────────┼─────────┤
+│ gemini-developer-api      │ Enabled │
+├───────────────────────────┼─────────┤
+│ gemini-agent-platform-api │ Enabled │
+└───────────────────────────┴─────────┘
+```
 
+### 6. Check App Check enforcement
+
+Firebase **enforces App Check on AI Logic by default**, so this is usually a
+read, not a write:
+
+```bash
+$ firebase appcheck:services:get ailogic
+Service:            ailogic (Firebase AI Logic)
+Enforcement:        Enforced
+Replay protection:  Off
+Last updated:       2026-08-04T22:48:46.551039Z
+```
+
+If it says anything other than `Enforced`, fix it:
+
+```bash
+firebase appcheck:services:set ailogic enforced
+```
+
+`firebase appcheck:services:list` shows the same for every service at once.
+
+### 7. Register a debug token
+
+App Check proves a request came from your real app. A browser on `localhost`
+can't produce a real attestation, so a **debug token** stands in for one:
+
+```bash
 firebase appcheck:debugtokens:create --app <your-app-id> --display-name local-dev
 ```
 
-Copy the token it prints. A browser on `localhost` can't produce a real
-attestation, so a *debug token* stands in for one — see
-[App Check](#app-check) below for what that means and what to do before you deploy.
+Copy the token it prints. See [App Check](#app-check) for what to do before you
+deploy anywhere real.
 
 ### 8. Fill in `.env.local`
 
@@ -144,8 +175,8 @@ Open http://localhost:5173 and ask for a story.
 startup. It's guarded by `import.meta.env.DEV`, so the token can never reach a
 production build.
 
-To see enforcement actually working, call the API with just your API key and no
-App Check token:
+To watch enforcement actually reject something, call the API with just your API
+key and no App Check token:
 
 ```bash
 curl -s -X POST -H "Content-Type: application/json" \
@@ -159,35 +190,40 @@ curl -s -X POST -H "Content-Type: application/json" \
 
 **There is no reCAPTCHA provider here.** That's fine on localhost and nowhere
 else. `src/firebase.ts` uses a `CustomProvider` that fails loudly rather than
-quietly pretending to attest. Before deploying anywhere real:
+quietly pretending to attest.
 
-1. Firebase console → **App Check** → register the web app with **reCAPTCHA Enterprise**
-2. Swap the `CustomProvider` in `src/firebase.ts` for
-   `new ReCaptchaEnterpriseProvider("<your site key>")`
-
-Handy while you work:
+Managing debug tokens:
 
 ```bash
 firebase appcheck:debugtokens:list --app <your-app-id>
+firebase appcheck:debugtokens:delete <tokenId> --app <your-app-id>
 ```
 
-Debug tokens are secrets — anyone holding one passes App Check as your app.
-Delete them when you're done:
-
-```bash
-firebase appcheck:debugtokens:delete <debugTokenId> --app <your-app-id>
-```
+They're secrets — anyone holding one passes App Check as your app. Delete them
+when you're done.
 
 ---
 
 ## Deploy
 
-Hosting is configured, but do the reCAPTCHA step above first or the deployed app
-can't attest and every AI call will 401.
+Before deploying anywhere real, the app needs a way to attest that isn't a debug
+token. Today that means the console: **App Check → register the web app →
+reCAPTCHA Enterprise**, then swap the `CustomProvider` in `src/firebase.ts` for:
+
+```ts
+new ReCaptchaEnterpriseProvider("<your site key>")
+```
+
+Then:
 
 ```bash
 npm run deploy
 ```
+
+> **Proposed:** `firebase appcheck:providers:set recaptcha-enterprise --app <id> --site-key <key>`
+> would make the backend half of this a one-liner, and `firebase appcheck:providers:list --app <id>`
+> would show which providers an app has configured. Not built yet — the
+> `appcheckadmin` experiment currently ships `appcheck:services:*` only.
 
 ---
 
@@ -197,28 +233,43 @@ npm run deploy
 `new AgentPlatformBackend("global")`. The newest Gemini models aren't in pinned
 regions yet, so `"us-central1"` 404s on `gemini-3.6-flash`.
 
-**`AI/api-not-enabled`** — `firebase init ailogic` enables AI Logic itself, but not
-`aiplatform.googleapis.com`. That's step 6.
+**`AI/api-not-enabled`** — `firebase init ailogic` turns on AI Logic itself, but
+not the provider behind it. That's step 5. `firebase ailogic:providers:list` tells
+you in one line.
 
 **`401 Firebase App Check token is invalid`** — no debug token, or it isn't
-registered on the project. Check `.env.local`, and note the SDK logs the token it's
-using to the browser console at startup.
+registered on the project. Check `.env.local` and
+`firebase appcheck:debugtokens:list --app <your-app-id>`. The SDK also logs the
+token it's using to the browser console at startup.
 
 **Everything works but no image appears** — almost always the Spark plan. Image
 models need Blaze.
 
 ---
 
-## Want the free tier instead?
+## What the preview commands replaced
 
-Swap the backend in [`src/ai.ts`](src/ai.ts):
+Same setup, before these command groups existed:
 
-```ts
-const ai = getAI(app, { backend: new GoogleAIBackend() });
-```
+| Step | Before | Now |
+| --- | --- | --- |
+| Enable the Vertex provider | `gcloud services enable aiplatform.googleapis.com`, or hunt for **Get started** in the console | `firebase ailogic:providers:enable gemini-agent-platform-api` |
+| See which provider is on | Read the enabled-services list and know that `aiplatform` means the Vertex provider | `firebase ailogic:providers:list` |
+| Enable the App Check API | `gcloud services enable firebaseappcheck.googleapis.com` | implied by the `appcheck:*` commands |
+| Read enforcement state | `curl` a `GET` and interpret a missing `enforcementMode` field | `firebase appcheck:services:get ailogic` |
+| Set enforcement | `curl -X PATCH ...?updateMask=enforcementMode` with a hand-written body | `firebase appcheck:services:set ailogic enforced` |
 
-That's the Gemini Developer API, which has a free tier and doesn't need Blaze —
-but image generation still does, so the illustration won't work on Spark either way.
+Two things stand out. First, `gcloud` disappears — the old flow needed a second
+CLI, a second auth session, and knowledge of which raw API backs which Firebase
+feature. Second, `enforcementMode` is omitted from the REST response when it's
+`OFF`, so reading enforcement by hand means knowing that an absent field means
+off; `services:get` just prints `Off`.
+
+The service id is the sharpest example of what the alias table buys you. App
+Check calls AI Logic `firebaseml.googleapis.com` — a different product's name —
+while AI Logic itself answers on `firebasevertexai.googleapis.com`. Passing the
+latter to the App Check API returns `Service not supported`. You type `ailogic`
+and never find out.
 
 ---
 
