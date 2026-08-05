@@ -8,14 +8,6 @@ cannot skip them.
 Every step below was run for real against a live project. The errors in the
 second half are the ones that actually happened, in the order they happened.
 
-**Time:** ~30 minutes, most of it waiting for the first deploy.
-
-> **No public docs yet.** `firebase.google.com/docs/ai-logic` has no page on
-> Cloud Triggers. The authority is the type definitions in
-> `node_modules/firebase-functions/lib/v2/providers/ai/index.d.ts` and the
-> Firebase CLI source. Where this guide states behaviour, it names the file that
-> proves it.
-
 ---
 
 ## Step 1 — Check your prerequisites
