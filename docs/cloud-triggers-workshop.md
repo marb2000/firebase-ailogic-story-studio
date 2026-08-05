@@ -56,66 +56,43 @@ You want `roles/cloudbuild.builds.builder` in the output.
 Also: **deploy as a project Owner.** The AI Logic IAM step is fail-soft — if it
 can't set the policy it warns and continues, and you find out later.
 
-## Step 3 — Create the functions codebase
+## Step 3 — Scaffold the functions codebase
 
 ```bash
-mkdir -p functions/src && cd functions
-npm init -y
-npm install firebase-functions
-npm install -D typescript
+firebase init functions
 ```
 
-`firebase-admin` is only needed if a handler touches Firestore, Storage, or Auth.
+Choose **TypeScript**, and pick your Node runtime when prompted. That single
+command writes everything you need:
 
-Edit `functions/package.json` — `engines.node` picks the deployed runtime, and
-`main` must point at compiled output:
+| It generates | Containing |
+| --- | --- |
+| `functions/package.json` | `main: "lib/index.js"`, `engines.node`, `scripts.build: "tsc"`, plus `serve` / `shell` / `logs` helpers |
+| `functions/tsconfig.json` | `outDir: "lib"`, `rootDir: "src"`, `strict`, `module: "NodeNext"` |
+| `functions/.gitignore` | ignores `lib/**/*.js` |
+| `functions/src/index.ts` | a stub to replace |
+| the `functions` block in `firebase.json` | `source`, `codebase`, and the `predeploy` hook that runs `tsc` on every deploy |
 
-```json
-{
-  "name": "story-studio-triggers",
-  "private": true,
-  "main": "lib/index.js",
-  "engines": { "node": "22" },
-  "scripts": { "build": "tsc" },
-  "dependencies": { "firebase-functions": "^7.3.2" },
-  "devDependencies": { "typescript": "^5.9.3" }
-}
-```
+Do **not** hand-write these files. Everything above is generated, including the
+`predeploy` hook that keeps `lib/` from going stale
+(`src/init/features/functions/typescript.ts`).
 
-`functions/tsconfig.json`:
+Two optional tweaks afterwards:
 
-```json
-{
-  "compilerOptions": {
-    "target": "ES2022",
-    "module": "NodeNext",
-    "moduleResolution": "NodeNext",
-    "outDir": "lib",
-    "rootDir": "src",
-    "strict": true,
-    "skipLibCheck": true
-  },
-  "include": ["src"]
-}
-```
+- The template adds **`firebase-admin`** as a dependency. You only need it if a
+  handler touches Firestore, Storage, or Auth. These two don't — you can drop it.
+- Confirm `firebase-functions` is **7.3.x or newer**. The AI provider changed
+  shape in 7.3, and older versions fail silently (error 9):
 
-## Step 4 — Register the codebase in `firebase.json`
+  ```bash
+  npm --prefix functions install firebase-functions@latest
+  ```
 
-```json
-{
-  "functions": {
-    "source": "functions",
-    "codebase": "default",
-    "ignore": ["node_modules", ".git", "firebase-debug.log", "*.local"],
-    "predeploy": ["npm --prefix \"$RESOURCE_DIR\" run build"]
-  }
-}
-```
+If you are adding functions to a project that already has a `firebase.json`,
+`firebase init functions` detects the existing config and offers to add a new
+codebase rather than overwriting.
 
-`predeploy` runs `tsc` on every deploy so `lib/` is never stale. Add
-`functions/lib/` to `.gitignore`.
-
-## Step 5 — Write the "before" trigger
+## Step 4 — Write the "before" trigger
 
 `functions/src/index.ts`:
 
@@ -185,7 +162,7 @@ Five things to understand, matching the numbered comments:
 4. **Your trigger sees every model in the project.** See error 5.
 5. **Return the whole request.** See error 6.
 
-## Step 6 — Write the "after" trigger
+## Step 5 — Write the "after" trigger
 
 ```ts
 import {
@@ -226,7 +203,7 @@ Build it:
 npm --prefix functions run build
 ```
 
-## Step 7 — Make the client use unary calls
+## Step 6 — Make the client use unary calls
 
 **Cloud Triggers do not fire on `generateContentStream()`.**
 
@@ -245,7 +222,7 @@ const text = result.response.text();
 
 You lose the typewriter effect. You gain rules that actually apply.
 
-## Step 8 — Deploy
+## Step 7 — Deploy
 
 ```bash
 firebase deploy --only functions --force
@@ -275,7 +252,7 @@ Expect:
 **Note the region.** Global AI Logic triggers deploy to `us-east1`, not
 `us-central1`.
 
-## Step 9 — Verify the deploy
+## Step 8 — Verify the deploy
 
 Two separate checks. Do both — the functions existing and the triggers being
 registered are different things.
@@ -311,7 +288,7 @@ Expect both triggers, each naming its function:
 
 An empty `{}` means the functions exist but nothing is calling them.
 
-## Step 10 — Test all three paths
+## Step 9 — Test all three paths
 
 An app that works is **not** evidence your trigger fired. Read the logs.
 
@@ -367,6 +344,32 @@ There is no config workaround — the Firebase CLI has no setting to point a
 functions build at a different service account. `buildServiceAccount` exists only
 for App Hosting.
 
+**Why isn't this automatic?** It looks like it should be, because the CLI *does*
+auto-grant to that same account. `obtainDefaultComputeServiceAgentBindings` in
+`src/deploy/functions/checkIam.ts` grants it two roles on a first deploy:
+
+```ts
+return [
+  { role: RUN_INVOKER_ROLE,             members: [defaultComputeServiceAgent] },
+  { role: EVENTARC_EVENT_RECEIVER_ROLE, members: [defaultComputeServiceAgent] },
+];
+```
+
+Those are **runtime** roles — invoke the service, receive events. The build role
+is Cloud Build's domain, and Google changed its default so builds now run as the
+compute account rather than `PROJECT_NUMBER@cloudbuild.gserviceaccount.com`
+(which still holds the builder role, hence the confusion above). The CLI's
+assumptions predate that change. `cloudbuild.builds.builder` appears nowhere in
+the firebase-tools source, for any trigger type.
+
+**This is not AI Logic's fault.** If anything, AI Logic triggers get you *more*
+automatic IAM than a plain HTTPS function: `ensureServiceAgentRoles` only runs
+for endpoints whose service declares `requiredProjectBindings`, and AI Logic
+declares them — which is how the `gcp-sa-firebasevertexai` proxy gets
+`roles/run.invoker` without you asking. A plain `onRequest` function declares
+none, so that path early-returns entirely. A first-ever `onRequest` deploy on a
+fresh project hits this identical build failure.
+
 **Source.** https://docs.cloud.google.com/functions/docs/troubleshooting,
 "Build service account". (The link the CLI prints, `cloud.google.com/...`,
 301-redirects there.)
@@ -388,7 +391,7 @@ not found. The function will not work correctly. Please redeploy.
 ```
 
 **Workaround.** Verify with `gcloud functions describe`, not `functions:list`
-(step 9A). A redeploy repairs the shells in place — no cleanup needed; the log
+(step 8A). A redeploy repairs the shells in place — no cleanup needed; the log
 will say `updating` rather than `creating`.
 
 **Good news:** trigger registration happens only after the functions are healthy,
@@ -401,7 +404,7 @@ Everything deploys, the app works, the logs stay empty.
 **Cause.** The client is using `generateContentStream()`. Triggers only fire on
 unary `generateContent()`.
 
-**Fix.** Step 7. There is no warning for this — you have to know.
+**Fix.** Step 6. There is no warning for this — you have to know.
 
 ## 4. A model comparison never matches
 
