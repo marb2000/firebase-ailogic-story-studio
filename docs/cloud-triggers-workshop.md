@@ -220,8 +220,6 @@ const result = await model.generateContent(prompt);
 const text = result.response.text();
 ```
 
-You lose the typewriter effect. You gain rules that actually apply.
-
 ## Step 7 — Deploy
 
 ```bash
