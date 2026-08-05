@@ -6,6 +6,97 @@ what broke.
 
 ---
 
+## Checklist: how to not lose an afternoon
+
+Ordered by when it bites you. Everything here is something that actually
+happened in this log.
+
+### Before you write any code
+
+1. **Blaze plan.** Cloud Functions and image models both require it.
+2. **Grant the build service account role — *before* the first deploy.**
+
+   ```bash
+   gcloud projects add-iam-policy-binding PROJECT_ID \
+     --member=serviceAccount:PROJECT_NUMBER-compute@developer.gserviceaccount.com \
+     --role=roles/cloudbuild.builds.builder
+   ```
+
+   On a project that has never built a Cloud Function, this is missing and the
+   build fails with a message that sounds like an org-policy problem. It is the
+   single most likely thing to stop you. Issue 1.
+3. **Deploy as a project Owner.** The AI Logic IAM step is *fail-soft* — if it
+   cannot set the policy it prints a warning and continues, and you find out
+   later when calls fail.
+
+### While writing the handler
+
+4. **Open the `.d.ts` for the version you installed:**
+   `node_modules/firebase-functions/lib/v2/providers/ai/index.d.ts`. There is no
+   public documentation for this feature. The provider changed shape between
+   7.2.x and 7.3.x — `event.auth.uid` → `event.authId`,
+   `event.data.template.id` → `.templateName` — and stale code compiles fine and
+   reads `undefined`.
+5. **Narrow on `event.data.api` first.** `request` and `response` are unions of
+   the Gemini and Vertex types; the union will not spread.
+6. **`event.data.model` is a full resource path**, not `"gemini-3.6-flash"`.
+   Use `.includes()`, never `===`.
+7. **Return the whole request, not a partial.** Merge semantics are undocumented;
+   returning the complete object is correct either way.
+8. **Your trigger sees every model in the project**, image models included. A
+   token cap written for text will truncate an image response.
+9. **Do not write rejection messages for end users.** A thrown `HttpsError`
+   reaches the client as a generic 500; the message stays in the logs.
+
+### On the client
+
+10. **Unary `generateContent()` only.** Triggers do not fire on
+    `generateContentStream()`. Streaming works perfectly and your hooks silently
+    never run — no error, no warning.
+
+### Deploying
+
+11. **Expect the first deploy to be slow.** It enables ~6 APIs.
+12. **Do not trust `firebase functions:list`.** After a failed build it happily
+    lists both functions with correct triggers and runtime. Confirm with:
+
+    ```bash
+    gcloud functions describe FUNCTION --region REGION --format='value(state)'
+    ```
+
+    Anything other than `ACTIVE` means it is not really there.
+13. **Confirm the triggers actually registered**, which is a separate step from
+    the functions existing:
+
+    ```bash
+    curl -s -H "Authorization: Bearer $(gcloud auth print-access-token)" \
+      -H "x-goog-user-project: PROJECT_ID" \
+      "https://firebasevertexai.googleapis.com/v1beta/projects/PROJECT_ID/locations/global/triggers"
+    ```
+
+    An empty `{}` means the functions exist but AI Logic is not calling them.
+14. **Pass `--force`** (or run `firebase functions:artifacts:setpolicy`) to set an
+    artifact cleanup policy, or container images accumulate and bill you.
+15. **Ignore the trailing "Functions successfully deployed but could not set up
+    cleanup policy" error** when the deploy above it failed. The wording is
+    hardcoded and wrong. Issue 2.
+
+### Testing
+
+16. Test **all three** paths: a normal request, a blocked request, and an image
+    request. The image path is the one that silently breaks.
+17. Read the logs to confirm the hooks ran, not just that the app worked. An app
+    that works is not evidence the trigger fired — that is exactly the streaming
+    failure mode.
+
+### Region
+
+18. Global AI Logic triggers deploy to **`us-east1`**, not `us-central1`, and
+    there is **one per event type per project**. Use
+    `{ regionalWebhook: true }` if you need one per region.
+
+---
+
 ## 0. A note on sources
 
 **AI Logic Cloud Triggers have no public documentation yet.** I checked:
