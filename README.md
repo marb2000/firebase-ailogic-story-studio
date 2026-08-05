@@ -92,6 +92,9 @@ reCAPTCHA Enterprise in the console and swap in
 
 ## Cloud Triggers
 
+**→ [Workshop: AI Logic Cloud Triggers](docs/cloud-triggers-workshop.md)** —
+step-by-step guide plus the 11 errors you're likely to hit.
+
 [`functions/src/index.ts`](functions/src/index.ts) has two AI Logic blocking
 functions. They run inside AI Logic, so the browser can't skip them.
 
