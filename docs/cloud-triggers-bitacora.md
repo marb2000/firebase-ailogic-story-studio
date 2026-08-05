@@ -1,0 +1,521 @@
+# Bitácora: adding AI Logic Cloud Triggers to Story Studio
+
+A running log of everything it took to get two AI Logic blocking functions from
+nothing to deployed, written as it happened. Commands, code, the reasoning, and
+what broke.
+
+---
+
+## 0. A note on sources
+
+**AI Logic Cloud Triggers have no public documentation yet.** I checked:
+`firebase.google.com/docs/ai-logic` has no page on triggers, blocking functions,
+`beforeGenerateContent`, or `afterGenerateContent`, and a site-scoped search
+turns up nothing.
+
+So the authority for this feature is, in order:
+
+1. **The `firebase-functions` type definitions** —
+   `node_modules/firebase-functions/lib/v2/providers/ai/index.d.ts`. This is
+   generated from the SDK source and is the contract.
+2. **The Firebase CLI source** — `src/deploy/functions/services/ailogic.ts` and
+   `src/gcp/ailogic.ts` describe exactly what deployment does.
+
+Official docs that *are* published and do apply:
+
+| Topic | URL |
+| --- | --- |
+| Firebase AI Logic | https://firebase.google.com/docs/ai-logic |
+| App Check with AI Logic | https://firebase.google.com/docs/ai-logic/app-check |
+| AI Logic locations | https://firebase.google.com/docs/ai-logic/locations |
+| Model list | https://firebase.google.com/docs/ai-logic/models |
+| FAQ / troubleshooting | https://firebase.google.com/docs/ai-logic/faq-and-troubleshooting |
+| Cloud Functions for Firebase | https://firebase.google.com/docs/functions |
+
+Where this doc states a behaviour with no public source, it says so and points
+at the file that proves it.
+
+---
+
+## 1. Prerequisites
+
+- Blaze billing. Not optional — Cloud Functions and image models both require it.
+- Firebase AI Logic already working in the app (see the main README).
+- Node 20+ locally. The deployed runtime is pinned separately, below.
+
+---
+
+## 2. The library
+
+Cloud Triggers live in `firebase-functions`, not in a separate package.
+
+```bash
+cd functions
+npm install firebase-functions
+```
+
+Installed: **7.3.2**, the current stable.
+
+The AI provider is reachable at two import paths that resolve to the same
+module:
+
+```ts
+import { beforeGenerateContent } from "firebase-functions/v2/ai";  // used here
+import { beforeGenerateContent } from "firebase-functions/ai";      // also valid
+```
+
+> **Version warning.** The AI provider changed shape between 7.2.x and 7.3.x.
+> `event.auth.uid` became `event.authId`, and `event.data.template.id` became
+> `event.data.template.templateName`. Code written against the preview compiles
+> fine and silently reads `undefined`. Verify against
+> `lib/v2/providers/ai/index.d.ts` in whatever version you actually installed.
+
+`firebase-admin` is **not** needed unless a handler touches Firestore, Storage,
+or Auth. Ours don't.
+
+---
+
+## 3. Scaffold
+
+`functions/package.json` — the important field is `engines.node`, which picks
+the deployed runtime:
+
+```json
+{
+  "name": "story-studio-triggers",
+  "private": true,
+  "main": "lib/index.js",
+  "engines": { "node": "22" },
+  "scripts": { "build": "tsc" },
+  "dependencies": { "firebase-functions": "^7.3.2" },
+  "devDependencies": { "typescript": "^5.9.3" }
+}
+```
+
+`main` points at compiled JS, so `tsc` must run before deploy. That is wired up
+in the next step.
+
+`functions/tsconfig.json` uses `"module": "NodeNext"` and emits to `lib/`.
+
+---
+
+## 4. Tell the CLI the functions exist
+
+`firebase.json`:
+
+```json
+{
+  "functions": {
+    "source": "functions",
+    "codebase": "default",
+    "ignore": ["node_modules", ".git", "firebase-debug.log", "*.local"],
+    "predeploy": ["npm --prefix \"$RESOURCE_DIR\" run build"]
+  }
+}
+```
+
+`predeploy` runs the TypeScript build automatically on every deploy, so
+`lib/` is never stale. `lib/` is gitignored.
+
+---
+
+## 5. The code
+
+Full file: [`functions/src/index.ts`](../functions/src/index.ts). Explained in
+pieces.
+
+### 5.1 Imports
+
+```ts
+import { logger } from "firebase-functions";
+import {
+  afterGenerateContent,
+  beforeGenerateContent,
+  HttpsError,
+  vertexV1Beta1,
+  type VertexV1Beta1GenerateContentRequest,
+  type VertexV1Beta1GenerateContentResponse,
+} from "firebase-functions/v2/ai";
+```
+
+`vertexV1Beta1` is the constant `"google.cloud.aiplatform.v1beta1"`. It matters
+because of the next point.
+
+### 5.2 Why every handler narrows on `event.data.api`
+
+AI Logic speaks two API flavours: the Gemini Developer API
+(`geminiV1Beta`) and Vertex AI (`vertexV1Beta1`). `event.data.request` is a
+**union** of their two request types.
+
+Those types are structurally similar but not identical — their `SchemaType`
+enums are separate declarations — so TypeScript refuses to spread the union:
+
+```
+Type 'SchemaType.STRING' is not assignable to type 'SchemaType | undefined'
+```
+
+Narrowing first makes the whole handler concrete:
+
+```ts
+if (event.data.api !== vertexV1Beta1) {
+  return;
+}
+const request = event.data.request as VertexV1Beta1GenerateContentRequest;
+```
+
+Story Studio always uses the Vertex backend, so the early return never fires in
+practice. It is the place to add a branch if you ever add the Developer API.
+
+### 5.3 Reading the prompt
+
+```ts
+function promptText(request: VertexV1Beta1GenerateContentRequest): string {
+  return (request.contents ?? [])
+    .flatMap((content) => content.parts ?? [])
+    .map((part) => ("text" in part ? part.text : "") ?? "")
+    .join(" ")
+    .toLowerCase();
+}
+```
+
+A request is `contents[] → parts[]`, and a part may be text, inline data, a
+function call, and so on. `"text" in part` skips the non-text ones.
+
+### 5.4 `beforeGenerateContent` — the guard
+
+```ts
+export const guardStoryPrompts = beforeGenerateContent((event) => {
+  // ...narrowing from 5.2...
+
+  const blocked = BLOCKED_TOPICS.find((topic) => promptText(request).includes(topic));
+  if (blocked) {
+    throw new HttpsError("invalid-argument", `Story Studio doesn't write about ${blocked}.`);
+  }
+```
+
+**Throwing rejects the call.** The client's `generateContent()` promise
+rejects and the app shows its error bar. This is the part you cannot do in
+client code — a modified client would just skip it.
+
+```ts
+  if (event.data.model.includes("image")) {
+    return;
+  }
+
+  return {
+    ...request,
+    generationConfig: {
+      ...request.generationConfig,
+      maxOutputTokens: Math.min(
+        request.generationConfig?.maxOutputTokens ?? MAX_STORY_TOKENS,
+        MAX_STORY_TOKENS,
+      ),
+    },
+  };
+});
+```
+
+Three things worth calling out.
+
+**Return the whole request, not a partial.** The SDK posts whatever you return
+straight back to AI Logic
+(`lib/v2/providers/ai/index.js`, `const responseBody = result || {}`), and the
+merge happens server-side where the semantics are not documented. Returning the
+complete edited request is correct whether the merge is shallow or deep.
+Returning nothing leaves the request untouched.
+
+**The image model is exempt from the token cap.** This is the subtle one. A
+global trigger sees *every* `generateContent()` in the project, and
+`gemini-3.1-flash-image` returns its picture as output tokens. A 4000-token
+text ceiling would truncate the image. Hence the `model.includes("image")` bail.
+
+**The cap is a cost control that the client cannot raise.** `Math.min` means a
+client asking for 50,000 tokens still gets 4,000.
+
+### 5.5 `afterGenerateContent` — the observer
+
+```ts
+export const recordGenerationUsage = afterGenerateContent((event) => {
+  const response = event.data.response as VertexV1Beta1GenerateContentResponse;
+  const usage = response.usageMetadata;
+
+  logger.info("Generation finished", {
+    model: event.data.model,
+    promptTokens: usage?.promptTokenCount,
+    totalTokens: usage?.totalTokenCount,
+    finishReason: response.candidates?.[0]?.finishReason,
+  });
+});
+```
+
+Returning nothing leaves the response untouched. This one only watches. It could
+rewrite the response by returning a partial, same as the before hook.
+
+### 5.6 The event object
+
+From `index.d.ts`, `AIBlockingEvent` carries, alongside `data`:
+
+| Field | Meaning |
+| --- | --- |
+| `authType` | `"app_user"` \| `"unauthenticated"` \| `"unknown"` |
+| `authId` | the caller's uid, when there is one |
+| `authClaims` | custom claims |
+| `appId`, `displayName` | which Firebase app called |
+| `androidPackageName`, `iosBundleId` | mobile callers |
+
+`event.data` carries `model`, `api`, `request`, `template` (for server prompt
+templates), and on the after event, `response`.
+
+---
+
+## 6. The client has to stop streaming
+
+**Cloud Triggers do not fire on `generateContentStream()`.**
+
+This is the single most important constraint and it is invisible: streaming
+works perfectly, the triggers just never run. Every guarantee the before hook
+provides silently disappears.
+
+So the story call changed from streaming to unary:
+
+```ts
+// Before — nice typewriter effect, hooks never fire
+const { stream } = await storyModel.generateContentStream(prompt);
+for await (const chunk of stream) { /* ... */ }
+
+// After
+const result = await storyModel.generateContent(prompt);
+return result.response.text();
+```
+
+The cost is the progressive reveal. The gain is that the rules actually apply.
+
+---
+
+## 7. Deploy
+
+```bash
+firebase deploy --only functions
+```
+
+No IAM or API setup beforehand — the CLI does it. See section 8 for what it
+actually did.
+
+### Attempt 1 — failed at the build step
+
+```
+i  functions: ensuring required API cloudfunctions.googleapis.com is enabled...
+⚠  functions: missing required API cloudfunctions.googleapis.com. Enabling now...
+⚠  functions: missing required API cloudbuild.googleapis.com. Enabling now...
+⚠  artifactregistry: missing required API artifactregistry.googleapis.com. Enabling now...
+⚠  extensions: missing required API firebaseextensions.googleapis.com. Enabling now...
+⚠  functions: missing required API eventarc.googleapis.com. Enabling now...
+⚠  functions: missing required API run.googleapis.com. Enabling now...
+i  functions: generating the service identity for pubsub.googleapis.com...
+i  functions: generating the service identity for eventarc.googleapis.com...
+✔  functions: functions source uploaded successfully
+i  functions: creating Node.js 22 (2nd Gen) function guardStoryPrompts(us-east1)...
+i  functions: creating Node.js 22 (2nd Gen) function recordGenerationUsage(us-east1)...
+Build failed with status: FAILURE. Could not build the function due to a missing
+permission on the build service account.
+⚠  functions: Deploys failed. Skipping deletes.
+```
+
+Three things this confirms even though it failed:
+
+1. **Six APIs were enabled automatically**, as section 8 predicted. No manual
+   `gcloud services enable` was needed.
+2. **The functions targeted `us-east1`**, confirming `getDefaultRegion` returns
+   `us-east1` for global AI Logic triggers rather than `us-central1`.
+3. **The AI Logic IAM binding was applied.** Checked after the failure:
+
+   ```
+   roles/run.invoker  serviceAccount:service-11147573823@gcp-sa-firebasevertexai.iam.gserviceaccount.com
+   ```
+
+   That is `requiredProjectBindings` from `services/ailogic.ts` working. The
+   AI Logic-specific half of the deploy succeeded; a generic Cloud Functions
+   prerequisite is what stopped it. See issue 1 below.
+
+---
+
+## 8. What the deploy does behind the scenes
+
+None of this is publicly documented; it is read from the CLI source.
+
+**Enables APIs.** `cloudfunctions`, `cloudbuild`, `artifactregistry`, `run`,
+`eventarc`, `firebaseextensions`. On a project that has only ever used AI Logic,
+none of these exist yet, so the first deploy is slow.
+
+**Grants the invoker role.** `src/deploy/functions/services/ailogic.ts` declares:
+
+```ts
+requiredProjectBindings = async (projectNumber: string) => [{
+  role: "roles/run.invoker",
+  members: [`serviceAccount:service-${projectNumber}@gcp-sa-firebasevertexai.iam.gserviceaccount.com`],
+}];
+```
+
+That service agent is the AI Logic proxy. Without this binding the trigger
+registers but AI Logic cannot call the function.
+
+`ensureServiceAgentRoles` in `src/deploy/functions/checkIam.ts` applies it. Note
+it is **fail-soft**: if it cannot set the IAM policy it prints manual
+instructions and continues, so the deploy looks fine and calls fail later. Deploy
+as a project Owner.
+
+**Registers the triggers.** `upsertBlockingFunction` in `src/gcp/ailogic.ts`
+POSTs to
+`firebasevertexai.googleapis.com/v1beta/projects/{p}/locations/global/triggers/{id}`
+where `{id}` is `before-generate-content` or `after-generate-content`.
+
+**Region.** `getDefaultRegion` returns `us-east1` for global AI Logic triggers,
+not the usual `us-central1`.
+
+**One per project.** `validateTrigger` rejects a second global trigger for the
+same event with `Can only create at most one global AI Logic Trigger for ...`.
+Use `{ regionalWebhook: true }` for one per region instead.
+
+**No experiment flag.** The AI Logic service is wired unconditionally into the
+deploy path (`src/deploy/functions/services/index.ts`). The `ailogic` experiment
+only gates the `firebase ailogic:*` commands.
+
+---
+
+## 9. Issues encountered
+
+### Issue 1 — Build failed: missing permission on the build service account
+
+**Symptom**
+
+```
+Build failed with status: FAILURE. Could not build the function due to a missing
+permission on the build service account. If you didn't revoke that permission
+explicitly, this could be caused by a change in the organization policies.
+```
+
+**Official source**
+
+https://docs.cloud.google.com/functions/docs/troubleshooting — section
+"Build service account".
+(The link the CLI prints, `cloud.google.com/functions/docs/troubleshooting#build-service-account`,
+301-redirects to `docs.cloud.google.com`.)
+
+**Cause**
+
+Cloud Functions v2 builds run as the **default compute service account**,
+`PROJECT_NUMBER-compute@developer.gserviceaccount.com`. Cloud Build changed its
+default service account behaviour, and on newer projects that account is no
+longer granted the builder role automatically. Without it, the build cannot read
+the source bucket or write to Artifact Registry.
+
+Confirmed by reading the project IAM policy after the failure. The compute
+account had only:
+
+```
+roles/eventarc.eventReceiver   11147573823-compute@developer.gserviceaccount.com
+roles/run.invoker              11147573823-compute@developer.gserviceaccount.com
+```
+
+No `roles/cloudbuild.builds.builder`. Note the *legacy* Cloud Build account
+`11147573823@cloudbuild.gserviceaccount.com` does hold that role — which is
+exactly why this is confusing: the role looks present in the policy, just on the
+account that is no longer used for the build.
+
+**Fix**
+
+```bash
+gcloud projects add-iam-policy-binding ailogic-cloud-triggers-test \
+  --member=serviceAccount:11147573823-compute@developer.gserviceaccount.com \
+  --role=roles/cloudbuild.builds.builder
+```
+
+The troubleshooting page shows an `iam service-accounts add-iam-policy-binding`
+variant, which grants the role *on the service account resource*. The builder
+role needs project scope to reach GCS, Artifact Registry, and Cloud Logging, so
+the project-level binding above is the one to use.
+
+**Nothing to do with AI Logic.** This is a generic Cloud Functions v2 first-deploy
+prerequisite on a project that has never built a function.
+
+### Issue 2 — a misleading final error line
+
+After the failures the CLI printed:
+
+```
+Error: Functions successfully deployed but could not set up cleanup policy in
+location us-east1.
+```
+
+Nothing was successfully deployed. The cleanup-policy check runs regardless of
+outcome and its message hardcodes the success wording. Ignore it when the deploy
+above it failed.
+
+Separately, the warning it refers to is real and worth acting on eventually:
+
+```
+⚠  functions: No cleanup policy detected for repositories in us-east1. This may
+   result in a small monthly bill as container images accumulate over time.
+```
+
+Fix with `firebase functions:artifacts:setpolicy`, or pass `--force` on a deploy.
+
+---
+
+## 10. Status
+
+**Not deployed yet.** Blocked on the IAM grant in issue 1, which needs to be run
+by hand.
+
+Once it is applied, re-run:
+
+```bash
+firebase deploy --only functions
+```
+
+Everything else the deploy needs is already in place — the six APIs are enabled
+and the AI Logic invoker binding is applied, both from attempt 1. Attempt 2 goes
+straight to building.
+
+## 11. Verification, once deployed
+
+1. **The functions exist, in the right region**
+
+   ```bash
+   firebase functions:list
+   ```
+
+   Expect `guardStoryPrompts` and `recordGenerationUsage` in `us-east1`.
+
+2. **The triggers are registered with AI Logic** — this is the AI Logic-specific
+   check, and the one that proves the blocking hook is wired rather than just a
+   function sitting there:
+
+   ```bash
+   curl -s -H "Authorization: Bearer $(gcloud auth print-access-token)" \
+     -H "x-goog-user-project: ailogic-cloud-triggers-test" \
+     "https://firebasevertexai.googleapis.com/v1beta/projects/ailogic-cloud-triggers-test/locations/global/triggers"
+   ```
+
+   Expect `before-generate-content` and `after-generate-content`, each pointing
+   at its `cloudFunction`.
+
+3. **A normal story still works.** Run the app, generate one. It should behave
+   exactly as before.
+
+4. **The after hook logged it**
+
+   ```bash
+   firebase functions:log --only recordGenerationUsage
+   ```
+
+   Expect `Generation finished` with `promptTokens` and `totalTokens`.
+
+5. **The guard actually blocks.** Ask for a story about a **weapon**. The request
+   should fail and the app should show its error bar;
+   `firebase functions:log --only guardStoryPrompts` should show
+   `Blocked a prompt`.
+
+6. **The illustration is not truncated.** Generate a story and let the image
+   render. If it comes back broken or half-drawn, the `model.includes("image")`
+   exemption in section 5.4 is not working and the token cap is clipping it.
