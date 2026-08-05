@@ -438,6 +438,48 @@ the project-level binding above is the one to use.
 **Nothing to do with AI Logic.** This is a generic Cloud Functions v2 first-deploy
 prerequisite on a project that has never built a function.
 
+**No config-level workaround.** The legacy Cloud Build account
+`PROJECT_NUMBER@cloudbuild.gserviceaccount.com` already holds the builder role,
+so pointing the build at it would also have worked — but the Firebase CLI has no
+setting for that. `buildServiceAccount` exists only under App Hosting
+(`src/apphosting/secrets/dialogs.ts`), not for Cloud Functions. The IAM grant is
+the only path.
+
+**Resolved.** After the grant, the compute account reads:
+
+```
+roles/cloudbuild.builds.builder
+roles/eventarc.eventReceiver
+roles/run.invoker
+```
+
+### Issue 1a — the failed deploy left broken function shells
+
+`firebase functions:list` after the failure looked **successful**:
+
+```
+guardStoryPrompts      v2  google.firebase.ailogic.v1.beforeGenerate  us-east1  ---  nodejs22
+recordGenerationUsage  v2  google.firebase.ailogic.v1.afterGenerate   us-east1  ---  nodejs22
+```
+
+It was not. `gcloud functions describe` told the truth:
+
+```
+[ERROR] Cloud Run service .../services/guardstoryprompts for the function was
+not found. The function will not work correctly. Please redeploy.
+```
+
+The function metadata was created, the build failed, so no Cloud Run service
+exists behind it. The `---` in the Memory column is the only hint in the Firebase
+listing. **Do not trust `functions:list` alone to confirm a deploy** — check
+`gcloud functions describe <name> --region <region>`.
+
+**The app was never affected.** The AI Logic triggers endpoint returned `{}` —
+registration happens in the release phase, after the functions are healthy, so
+AI Logic was never pointed at the broken shells. Verified by generating a story
+while they sat there: it worked normally. A redeploy repairs the shells in
+place (the second attempt logged `updating` rather than `creating`).
+
 ### Issue 2 — a misleading final error line
 
 After the failures the CLI printed:
@@ -462,22 +504,120 @@ Fix with `firebase functions:artifacts:setpolicy`, or pass `--force` on a deploy
 
 ---
 
-## 10. Status
+### Attempt 2 — deployed
 
-**Not deployed yet.** Blocked on the IAM grant in issue 1, which needs to be run
-by hand.
+After the IAM grant, `firebase deploy --only functions --force`:
 
-Once it is applied, re-run:
-
-```bash
-firebase deploy --only functions
+```
+i  functions: updating Node.js 22 (2nd Gen) function guardStoryPrompts(us-east1)...
+i  functions: updating Node.js 22 (2nd Gen) function recordGenerationUsage(us-east1)...
+✔  functions[guardStoryPrompts(us-east1)] Successful update operation.
+✔  functions[recordGenerationUsage(us-east1)] Successful update operation.
+i  functions: Configured cleanup policy for repository in us-east1.
+✔  Deploy complete!
 ```
 
-Everything else the deploy needs is already in place — the six APIs are enabled
-and the AI Logic invoker binding is applied, both from attempt 1. Attempt 2 goes
-straight to building.
+`--force` was used to accept the artifact cleanup policy (1-day image
+retention) rather than leaving the warning from attempt 1 outstanding.
 
-## 11. Verification, once deployed
+Note it says **updating**, not creating: the broken shells from attempt 1 were
+repaired in place. No cleanup was needed.
+
+## 10. Status: deployed and verified
+
+```
+$ gcloud functions describe guardStoryPrompts --region us-east1 --format='value(state)'
+ACTIVE
+$ gcloud functions describe recordGenerationUsage --region us-east1 --format='value(state)'
+ACTIVE
+```
+
+Triggers registered with AI Logic:
+
+```json
+{"triggers": [
+  {"name": ".../locations/global/triggers/before-generate-content",
+   "cloudFunction": {"id": "guardStoryPrompts", "locationId": "us-east1"}},
+  {"name": ".../locations/global/triggers/after-generate-content",
+   "cloudFunction": {"id": "recordGenerationUsage", "locationId": "us-east1"}}
+]}
+```
+
+End-to-end results:
+
+| Test | Result |
+| --- | --- |
+| Normal story | Works. 911 chars, plus a 2.88 MB illustration |
+| Before hook fires | `Allowing generation` logged for both models |
+| After hook fires | `Generation finished`, `promptTokens: 73, totalTokens: 1121` |
+| Blocked topic ("weapon") | Request rejected, `Blocked a prompt` logged |
+| Image not truncated | `finishReason: STOP` at 1366 tokens, image renders fully |
+
+## 11. Runtime findings
+
+Two things that only showed up once the triggers were live.
+
+### `event.data.model` is a full resource path, not a model id
+
+The logs show:
+
+```
+"model":"projects/ailogic-cloud-triggers-test/locations/global/publishers/google/models/gemini-3.6-flash"
+```
+
+Not `"gemini-3.6-flash"`. So this would silently never match:
+
+```ts
+if (event.data.model === "gemini-3.1-flash-image") { /* never true */ }
+```
+
+The `.includes("image")` check in section 5.4 works because it is a substring
+test. Anything comparing model names must account for the full path.
+
+### A rejected prompt reaches the client as a generic 500
+
+`guardStoryPrompts` threw
+`HttpsError("invalid-argument", "Story Studio doesn't write about weapon.")`.
+The function logged exactly that, with `code: 'invalid-argument'` and
+`httpErrorCode: { canonicalName: 'INVALID_ARGUMENT', status: 400 }`.
+
+What the browser received:
+
+```
+[500 ] Internal error encountered. (AI/fetch-error)
+```
+
+**The message does not propagate.** The block works — the model never ran — but
+you cannot tell the user *why*. The reason is only in the function logs.
+
+Practical consequence: do not write rejection messages for end users. If the app
+needs to explain itself, it has to pre-validate on the client too (for the
+message) while the trigger does the actual enforcement (for the guarantee).
+
+Also note the function log labels the throw:
+
+```
+Unhandled error: HttpsError: Story Studio doesn't write about weapon.
+```
+
+"Unhandled" is the SDK's own wording in its catch block
+(`lib/v2/providers/ai/index.js`), not a sign anything is wrong. A deliberate
+`HttpsError` throw looks identical to a crash in the logs.
+
+### Confirmed: the image model really does hit the hook
+
+Both models appear in the before-hook logs:
+
+```
+{"message":"Allowing generation","model":".../gemini-3.6-flash"}
+{"message":"Allowing generation","model":".../gemini-3.1-flash-image"}
+```
+
+This validates the exemption in section 5.4. Without it, the 4000-token cap
+would have applied to an image response that used 1366 tokens for a small test
+image — a larger one would have been truncated.
+
+## 12. Verification commands
 
 1. **The functions exist, in the right region**
 
