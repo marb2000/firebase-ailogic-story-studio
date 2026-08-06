@@ -113,3 +113,24 @@ export const recordGenerationUsage = afterGenerateContent((event) => {
     finishReason: response.candidates?.[0]?.finishReason,
   });
 });
+
+/**
+ * EXPERIMENT: a *second* beforeGenerateContent for the same project.
+ *
+ * `validateTrigger` in the CLI groups conflicts separately for global and
+ * regional triggers, so a global trigger and a regional one for the same event
+ * type do not collide. This function tests whether both actually fire, and in
+ * what order, when a request comes in.
+ *
+ * It only logs — it never modifies or blocks — so it cannot break the app
+ * whichever way the answer turns out.
+ */
+export const regionalGuardExperiment = beforeGenerateContent(
+  { regionalWebhook: true },
+  (event) => {
+    logger.info("REGIONAL trigger fired", {
+      model: event.data.model,
+      appId: event.appId,
+    });
+  },
+);

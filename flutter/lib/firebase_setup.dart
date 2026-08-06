@@ -48,5 +48,19 @@ Future<void> initializeFirebase() async {
     providerAndroid: kDebugMode
         ? const AndroidDebugProvider(debugToken: _androidDebugToken)
         : const AndroidPlayIntegrityProvider(),
+    // Web has no debug *provider* class. It reads a debug token from a global
+    // that must be set before Firebase starts — see web/index.html. That global
+    // makes the SDK bypass this provider entirely, so the site key below is
+    // only used in a real production web build.
+    providerWeb: ReCaptchaEnterpriseProvider(_recaptchaSiteKey),
   );
 }
+
+/// reCAPTCHA Enterprise site key, used only by production web builds.
+///
+/// Register the web app under App Check in the Firebase console to get one.
+/// Local web development uses the debug token in `web/index.html` instead.
+const _recaptchaSiteKey = String.fromEnvironment(
+  'RECAPTCHA_SITE_KEY',
+  defaultValue: 'unused-in-debug',
+);
