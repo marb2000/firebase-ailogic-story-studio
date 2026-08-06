@@ -70,8 +70,11 @@ http://localhost:5173.
 | [`src/main.ts`](src/main.ts) | DOM wiring |
 
 Both models go through the same `generateContent()` API — the image model just
-asks for an `IMAGE` response modality. Story is `gemini-3.6-flash` (streamed),
-illustration is `gemini-3.1-flash-image` (Nano Banana 2).
+asks for an `IMAGE` response modality. Story is `gemini-3.6-flash`, illustration
+is `gemini-3.1-flash-image` (Nano Banana 2).
+
+Calls are **unary, never streamed**. Cloud Triggers don't fire on
+`generateContentStream()`, so streaming would quietly bypass the hooks below.
 
 ## Gotchas
 
@@ -87,11 +90,28 @@ works on localhost and nowhere else. Before deploying, register the app with
 reCAPTCHA Enterprise in the console and swap in
 `new ReCaptchaEnterpriseProvider("<site key>")`. Then `npm run deploy`.
 
-## Next
+## Cloud Triggers
 
-AI Logic Cloud Triggers — `beforeGenerateContent` and `afterGenerateContent`,
-deployed as Cloud Functions. The two calls in [`src/ai.ts`](src/ai.ts) are what
-they'd intercept.
+**→ [Workshop: AI Logic Cloud Triggers](docs/cloud-triggers-workshop.md)** —
+step-by-step guide plus the 11 errors you're likely to hit.
+
+[`functions/src/index.ts`](functions/src/index.ts) has two AI Logic blocking
+functions. They run inside AI Logic, so the browser can't skip them.
+
+| Function | Event | What it does |
+| --- | --- | --- |
+| `guardStoryPrompts` | `beforeGenerateContent` | Rejects blocked topics, caps story length |
+| `recordGenerationUsage` | `afterGenerateContent` | Logs model and token usage |
+
+```bash
+cd functions && npm install && npm run build
+```
+
+Not deployed yet. `firebase deploy --only functions --dry-run` validates without
+deploying, but it enables the Cloud Functions APIs on your project.
+
+Both are **global** triggers, so there's one of each per project and the CLI puts
+them in `us-east1`. Pass `{ regionalWebhook: true }` for one per region.
 
 ## License
 

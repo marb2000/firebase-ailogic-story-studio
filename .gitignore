@@ -74,3 +74,6 @@ dist/
 
 # Pins a specific Firebase project; each clone picks its own with `firebase use --add`.
 .firebaserc
+
+# Compiled Cloud Functions
+functions/lib/
